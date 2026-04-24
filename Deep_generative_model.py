@@ -47,8 +47,8 @@ class MLP_Decoder(nn.Module):
         )
 
     def forward(self, z):
-        logits = self.mlp(z).view(-1, self.max_nodes, self.max_nodes)
-        return logits
+        adj_pred = self.mlp(z).view(-1, self.max_nodes, self.max_nodes)
+        return adj_pred
 
 # --- 3. VAE Wrapper ---
 class GraphVAE(nn.Module):
@@ -65,17 +65,19 @@ class GraphVAE(nn.Module):
     def forward(self, data):
         mu, logvar = self.encoder(data.x, data.edge_index, data.batch)
         z = self.reparameterize(mu, logvar)
-        logits = self.decoder(z)
+        adj_pred = self.decoder(z)
         adj_target = to_dense_adj(data.edge_index, data.batch, max_num_nodes=self.decoder.max_nodes)
-        recon_loss = nn.functional.binary_cross_entropy_with_logits(logits, adj_target, reduction='mean')
+        recon_loss = nn.functional.binary_cross_entropy_with_logits(adj_pred, adj_target, reduction='mean')
         kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
-        return recon_loss + 0.01 * kl_loss, logits, mu
+        return recon_loss + 0.01 * kl_loss, adj_pred, mu # beta = 0.01 to balance reconstruction and KL
 
 # --- 4. Main Functionality ---
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--mode', type=str, default='train', choices=['train', 'sample'])
     parser.add_argument('--num_samples', type=int, default=1000)
+    parser.add_argument('--epochs', type=int, default=500)
+
     args = parser.parse_args()
 
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
@@ -83,20 +85,20 @@ def main():
     max_nodes = max([d.num_nodes for d in dataset])
     latent_dim = 2 # Keep 2 for easy viz
     
-    model = GraphVAE(
-        GNN_Encoder(dataset.num_features, 32, latent_dim, 4),
-        MLP_Decoder(latent_dim, max_nodes)
-    ).to(device)
+    model = GraphVAE(GNN_Encoder(dataset.num_features, 32, latent_dim, 4),MLP_Decoder(latent_dim, max_nodes)).to(device)
 
     model_path = "graph_vae.pt"
 
     if args.mode == 'train':
         loader = DataLoader(dataset, batch_size=32, shuffle=True)
-        optimizer = torch.optim.Adam(model.parameters(), lr=1e-3)
+        # Optimizer
+        optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
+        # Learning rate scheduler
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, gamma=0.995)
         plt.ion()
         fig, ax = plt.subplots(figsize=(6, 5))
 
-        for epoch in range(1, 501):
+        for epoch in range(1, args.epochs + 1):
             model.train()
             total_loss = 0
             all_mu, all_y = [], []
@@ -107,11 +109,12 @@ def main():
                 loss, _, mu = model(data)
                 loss.backward()
                 optimizer.step()
-                
+
                 total_loss += loss.item()
                 all_mu.append(mu.detach().cpu().numpy())
                 all_y.append(data.y.detach().cpu().numpy())
-            
+
+            scheduler.step()
             if epoch % 10 == 0:
                 print(f"Epoch {epoch} | Loss: {total_loss/len(loader):.4f}")
                 ax.clear()
@@ -136,22 +139,16 @@ def main():
         print(f"Sampling {args.num_samples} graphs...")
 
         with torch.no_grad():
-            # 1. Sample latent vectors from the prior P(z) ~ N(0, I)
             z = torch.randn(args.num_samples, latent_dim).to(device)
+            adj_pred = model.decoder(z)
             
-            # 2. Decode latents into Adjacency Matrix Logits
-            logits = model.decoder(z)
-            
-            # 3. Convert to probabilities and then to binary (0 or 1)
             # We use a 0.5 threshold to decide if an edge exists
-            probs = torch.sigmoid(logits)
+            probs = torch.sigmoid(adj_pred)
             adj_binary = (probs > 0.5).float() # Shape: [num_samples, max_nodes, max_nodes]
 
-            # 4. Flatten each adjacency matrix to a vector
             # Shape becomes: [num_samples, max_nodes * max_nodes]
             adj_flattened = adj_binary.view(args.num_samples, -1).cpu().numpy()
 
-            # 5. Save to CSV
             import pandas as pd
             df = pd.DataFrame(adj_flattened)
             output_file = "sampled_graphs.csv"
