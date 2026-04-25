@@ -4,6 +4,8 @@ import torch.distributions as td
 from torch_geometric.datasets import TUDataset
 from torch_geometric.loader import DataLoader
 from torch_geometric.utils import to_dense_adj
+import matplotlib
+matplotlib.use('Agg')  # non-GUI backend
 import matplotlib.pyplot as plt
 import numpy as np
 import argparse
