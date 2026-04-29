@@ -92,7 +92,7 @@ def main():
     model_path = "graph_vae.pt"
 
     if args.mode == 'train':
-        loader = DataLoader(dataset, batch_size=32, shuffle=True)
+        loader = DataLoader(dataset, batch_size=32, shuffle=True) # <---------------------- Why are we training on all of the data?
         # Optimizer
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
         # Learning rate scheduler
