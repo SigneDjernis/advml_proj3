@@ -4,6 +4,7 @@ from torch_geometric.datasets import TUDataset
 from torch_geometric.loader import DataLoader
 import numpy as np
 import networkx as nx
+import pandas as pd
 
 device = 'cpu'
 
@@ -18,10 +19,11 @@ train_loader = DataLoader(train_dataset, batch_size=100)
 
 class Baseline():
 
-    def __init__(self, dataloader):
+    def __init__(self, dataloader, max_nodes):
         
         self.dataloader = dataloader
-        self.node_counts = self.count_nodes()
+        self.values, self.probs = self.count_nodes()
+        self.max_nodes = max_nodes
         
     def count_nodes(self):
         all_node_counts = []
@@ -31,13 +33,15 @@ class Baseline():
             counts = torch.bincount(data.batch)
             all_node_counts.extend(counts.tolist())
         
-        return np.array(all_node_counts)
+        all_node_counts = np.array(all_node_counts)
+
+        values, counts = np.unique(all_node_counts, return_counts=True) # Return the different options for N and the counts
+        probs = counts / counts.sum()
+
+        return values, probs
     
     def sample_N(self):
-
-        values, counts = np.unique(self.node_counts, return_counts=True) # Return the different options for N and the counts
-        probs = counts / counts.sum()
-        N = np.random.choice(values, size=1, p=probs)
+        N = np.random.choice(self.values, size=1, p=self.probs)
         return N
 
     def compute_link_prob(self):
@@ -84,23 +88,32 @@ class Baseline():
             return N, n_edges / n_possible_edges
 
                    
-    def erdos_reyi(self):
+    def erdos_reyi(self, nsamples = 100):
 
-        N, r = self.compute_link_prob()
+        adj_matrices = []
 
-        # Generate each possible edge independently with a fixed probability
+        for i in range(nsamples):
+            N, r = self.compute_link_prob()
 
-        # using networkx
-        G = nx.erdos_renyi_graph(N, r)
-        adj = nx.adjacency_matrix(G).toarray()
+            # Generate each possible edge independently with a fixed probability
 
-        # using torch
-        # upper = torch.rand((N, N))
-        # upper = (upper < r).int()
-        # upper = torch.triu(upper, diagonal=1)
-        # adj = upper + upper.T
+            # using networkx
+            A = np.zeros((self.max_nodes, self.max_nodes))
+            G = nx.erdos_renyi_graph(N, r)
+            adj = nx.adjacency_matrix(G).toarray()
 
-        return adj
+            # using torch
+            # upper = torch.rand((N, N))
+            # upper = (upper < r).int()
+            # upper = torch.triu(upper, diagonal=1)
+            # adj = upper + upper.T
+
+            A[:N, :N] = adj
+            adj_matrices.append(A.flatten())
+        
+        adj_matrices = np.vstack(adj_matrices)
+
+        return adj_matrices
         
 
 # Task 1: Sample the number of nodes N from the emperical distribution of the number of nodes in the training data
@@ -111,8 +124,11 @@ class Baseline():
 
 # Task 3: Sample a random graph with N nodes and edge probability r according to the Erdos-Renyi model
 
-base = Baseline(train_loader)
+base = Baseline(train_loader, max_nodes = 28)
 
-sample = base.erdos_reyi()
-print(sample.shape)
-print(sample)
+sample = base.erdos_reyi(nsamples=2)
+
+
+df = pd.DataFrame(sample)
+output_file = "sampled_graphs_baseline.csv"
+df.to_csv(output_file, index=False, header=False)
