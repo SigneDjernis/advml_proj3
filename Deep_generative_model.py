@@ -71,7 +71,8 @@ class GraphVAE(nn.Module):
         adj_target = to_dense_adj(data.edge_index, data.batch, max_num_nodes=self.decoder.max_nodes)
         recon_loss = nn.functional.binary_cross_entropy_with_logits(adj_pred, adj_target, reduction='mean')
         kl_loss = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
-        return recon_loss + 0.01 * kl_loss, adj_pred, mu # beta = 0.01 to balance reconstruction and KL
+        beta=1
+        return recon_loss + beta* kl_loss, adj_pred, mu 
 
 # --- 4. Main Functionality ---
 def main():
@@ -85,14 +86,14 @@ def main():
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     dataset = TUDataset(root='./data/', name='MUTAG')
     max_nodes = max([d.num_nodes for d in dataset])
-    latent_dim = 2 # Keep 2 for easy viz
+    latent_dim = 32 
     
     model = GraphVAE(GNN_Encoder(dataset.num_features, 32, latent_dim, 4),MLP_Decoder(latent_dim, max_nodes)).to(device)
 
     model_path = "graph_vae.pt"
 
     if args.mode == 'train':
-        loader = DataLoader(dataset, batch_size=32, shuffle=True) # <---------------------- Why are we training on all of the data?
+        loader = DataLoader(dataset, batch_size=32, shuffle=True) 
         # Optimizer
         optimizer = torch.optim.Adam(model.parameters(), lr=1e-2)
         # Learning rate scheduler
@@ -143,10 +144,9 @@ def main():
         with torch.no_grad():
             z = torch.randn(args.num_samples, latent_dim).to(device)
             adj_pred = model.decoder(z)
-            
-            # We use a 0.5 threshold to decide if an edge exists
+
             probs = torch.sigmoid(adj_pred)
-            adj_binary = (probs > 0.5).float() # Shape: [num_samples, max_nodes, max_nodes]
+            adj_binary = torch.bernoulli(probs)
 
             # Shape becomes: [num_samples, max_nodes * max_nodes]
             adj_flattened = adj_binary.view(args.num_samples, -1).cpu().numpy()
